@@ -1,0 +1,5 @@
+{
+  "提示": "请在 NapCat 的网络配置中创建同等配置；字段名随版本可能略有不同。",
+  "http": { "enabled": true, "host": "127.0.0.1", "port": 3000, "access_token": "change-me" },
+  "websocket": { "enabled": true, "host": "0.0.0.0", "port": 3001, "access_token": "change-me" }
+}
