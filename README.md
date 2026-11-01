@@ -5,8 +5,10 @@
 ## 当前能力
 
 - 自动接收所有群聊和私聊消息，网页左侧提供好友/群聊会话列表，网页 WebSocket 接近实时更新。
-- 文本、@、图片、回复和基础消息段渲染；昵称优先群名片，头像使用 QQ qlogo。
-- `forward` 自动调用 `get_forward_msg`，递归解析嵌套节点并以可折叠卡片展示。
+- 文本、@、图片、QQ 表情、回复和基础消息段渲染；昵称优先群名片，头像使用 QQ qlogo。
+- 引用消息可点击跳转到本地保存的原消息；每个群聊或私聊最多保留 200 条消息，超出后自动清理最旧记录。
+- `forward` 自动调用 `get_forward_msg`，递归解析嵌套节点、图片和表情，并以可折叠卡片展示。
+- 聊天栏可自定义本地消息保留数量，未设置时默认保留 100 条，范围为 1-1000 条。
 - share/json 消息中的 bilibili/b23.tv URL 可点击。
 - 网页文本发送、引用回复；图片上传接口已提供，可保存为服务器表情包。
 - WEB_TOKEN 保护 API、上传接口和网页 WebSocket；NapCat token 只存在后端。
@@ -37,13 +39,113 @@ npm run dev
 
 5. 打开 `http://localhost:5173`，输入 `WEB_TOKEN` 和群号。后端启动日志应显示监听地址，并在 NapCat 连接后显示 `NapCat WS connected`。
 
-## Ubuntu Docker 部署
+## Ubuntu 部署
+
+### 1. 克隆项目并处理 `/opt` 权限
+
+`/opt` 通常属于 root。普通用户直接在 `/opt/qq-web-bridge` 中执行 `git clone` 可能出现：
+
+```text
+fatal: could not create work tree dir 'QQsync': Permission denied
+```
+
+推荐使用下面的方式，让当前用户拥有部署目录：
 
 ```bash
-cp .env.example .env
-# 编辑 .env：WEB_TOKEN、NAPCAT_WS、NAPCAT_HTTP、NAPCAT_TOKEN
-docker compose up -d --build
+sudo mkdir -p /opt/qq-web-bridge
+sudo chown -R "$USER":"$USER" /opt/qq-web-bridge
+cd /opt/qq-web-bridge
+git clone https://github.com/EtttJ/QQsync.git
+cd /opt/qq-web-bridge/QQsync
 ```
+
+如果希望仓库直接位于 `/opt/qq-web-bridge`，避免多一层 `QQsync`：
+
+```bash
+sudo mkdir -p /opt/qq-web-bridge
+sudo chown -R "$USER":"$USER" /opt/qq-web-bridge
+git clone https://github.com/EtttJ/QQsync.git /opt/qq-web-bridge
+cd /opt/qq-web-bridge
+```
+
+不要同时使用两种方式。若已经执行过：
+
+```bash
+sudo git clone https://github.com/EtttJ/QQsync.git
+```
+
+那么仓库通常位于：
+
+```text
+/opt/qq-web-bridge/QQsync
+```
+
+后续必须先进入该目录，否则会出现：
+
+```text
+cp: cannot stat '.env.example': No such file or directory
+```
+
+修复 root 所有权并进入正确目录：
+
+```bash
+sudo chown -R "$USER":"$USER" /opt/qq-web-bridge/QQsync
+cd /opt/qq-web-bridge/QQsync
+```
+
+### 2. 配置环境变量
+
+在仓库根目录执行：
+
+```bash
+cd /opt/qq-web-bridge/QQsync
+cp .env.example .env
+nano .env
+```
+
+如果使用“NapCat 在本地 Windows、服务器运行网页”的方案，配置示例：
+
+```env
+PORT=8787
+HOST=127.0.0.1
+PUBLIC_URL=https://example.com
+NAPCAT_WS=安全隧道提供的WS地址
+NAPCAT_HTTP=安全隧道提供的HTTP地址
+NAPCAT_TOKEN=NapCat的access_token
+WEB_TOKEN=一个长度至少20位的网页密码
+HISTORY_LIMIT=100
+UPLOAD_DIR=./data/uploads
+DB_FILE=./data/qq-bridge.db
+```
+
+当前版本不再需要 `LISTEN_GROUPS`，会自动监听所有群聊和私聊。
+
+### 3. 安装并构建
+
+```bash
+cd /opt/qq-web-bridge/QQsync/backend
+npm install
+npm run build
+
+cd /opt/qq-web-bridge/QQsync/frontend
+npm install
+npm run build
+```
+
+### 4. 直接启动测试
+
+```bash
+cd /opt/qq-web-bridge/QQsync/backend
+npm start
+```
+
+看到 `QQ Web Bridge listening` 后，再用另一个终端测试：
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+确认无误后按 `Ctrl+C` 停止，再配置 systemd 和 Nginx。
 
 ### A. NapCat 在本地 Windows，服务器只跑前后端
 
@@ -51,9 +153,12 @@ docker compose up -d --build
 
 ### B. NapCat 与桥接服务全部在 Ubuntu
 
-在确认账号风险、图形环境和 NapCat 官方支持方式后，将 NapCat 放入同一 Docker 网络，`NAPCAT_WS` 使用服务名和容器端口，例如 `ws://napcat:3001`。随后：
+在确认账号风险、图形环境和 NapCat 官方支持方式后，将 NapCat 放入同一 Docker 网络，`NAPCAT_WS` 使用服务名和容器端口，例如 `ws://napcat:3001`。当前仓库的 Compose 只包含前后端，不会自动创建 NapCat 容器；NapCat 服务需要自行加入同一 Docker 网络。随后：
 
 ```bash
+cd /opt/qq-web-bridge/QQsync
+cp .env.example .env
+# 编辑 .env：WEB_TOKEN、NAPCAT_WS、NAPCAT_HTTP、NAPCAT_TOKEN
 docker compose up -d --build
 docker compose logs -f backend
 ```

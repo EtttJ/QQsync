@@ -51,7 +51,7 @@ export async function getConversations(): Promise<Conversation[]> {
 }
 async function normalizeImages(segments: Segment[]) {
   return Promise.all(segments.map(async (segment) => {
-    if (segment.type !== "image") return segment;
+    if (segment.type !== "image" && segment.type !== "mface") return segment;
     try {
       return { ...segment, data: { ...segment.data, url: `/api/image?file=${encodeURIComponent(segment.data.file ?? segment.data.url ?? "")}&token=${encodeURIComponent(config.WEB_TOKEN)}` } };
     } catch (error) {
@@ -60,12 +60,34 @@ async function normalizeImages(segments: Segment[]) {
     }
   }));
 }
-function parseForwardNode(node: any): ForwardNode {
-  const content = normalizeContent(node.content ?? node.message);
+async function normalizeMentions(segments: Segment[], chatType: "group" | "private", chatId: string) {
+  const nicknames = new Map<string, string>();
+  return Promise.all(segments.map(async (segment) => {
+    if (segment.type !== "at" || !segment.data.qq) return segment;
+    const userId = segment.data.qq;
+    const cached = nicknames.get(userId);
+    if (cached) return { ...segment, data: { ...segment.data, nickname: cached } };
+    try {
+      const info = chatType === "group"
+        ? await callApi<{ card?: string; nickname?: string }>("get_group_member_info", { group_id: Number(chatId), user_id: Number(userId), no_cache: false })
+        : await callApi<{ card?: string; nickname?: string }>("get_stranger_info", { user_id: Number(userId), no_cache: false });
+      const nickname = info.card || info.nickname;
+      if (!nickname) return segment;
+      nicknames.set(userId, nickname);
+      return { ...segment, data: { ...segment.data, nickname } };
+    } catch (error) {
+      console.error(`Failed to resolve mention nickname for ${userId}:`, error);
+      return segment;
+    }
+  }));
+}
+async function parseForwardNode(node: any): Promise<ForwardNode> {
+  const content = await normalizeImages(normalizeContent(node.content ?? node.message));
+  const children = await Promise.all(content
+    .filter((segment) => segment.type === "forward" && segment.data?.content)
+    .map((segment) => parseForwardNode(segment.data.content)));
   return { userId: node.uin ? String(node.uin) : node.user_id ? String(node.user_id) : undefined,
-    nickname: node.name ?? node.nickname, time: node.time, content,
-    children: content.filter((segment) => segment.type === "forward" && segment.data?.content)
-      .map((segment) => parseForwardNode(segment.data.content)) };
+    nickname: node.name ?? node.nickname, time: node.time, content, children };
 }
 async function expandForwards(segments: Segment[]): Promise<ForwardNode[] | undefined> {
   const forwards = segments.filter((segment) => segment.type === "forward");
@@ -73,7 +95,7 @@ async function expandForwards(segments: Segment[]): Promise<ForwardNode[] | unde
   const result: ForwardNode[] = [];
   for (const segment of forwards) {
     const res = await callApi<{ messages?: any[] }>("get_forward_msg", { id: segment.data.id });
-    result.push(...(res.messages ?? []).map(parseForwardNode));
+    result.push(...await Promise.all((res.messages ?? []).map(parseForwardNode)));
   }
   return result;
 }
@@ -87,7 +109,7 @@ async function handleEvent(event: OneBotEvent) {
   const chatId = String(chatType === "group" ? event.group_id : (event.user_id ?? event.sender?.user_id ?? ""));
   if (!chatId || chatId === "undefined") return;
   const userId = String(event.sender?.user_id ?? event.user_id ?? "");
-  const segments = await normalizeImages(normalizeContent(event.message));
+  const segments = await normalizeMentions(await normalizeImages(normalizeContent(event.message)), chatType, chatId);
   const selfId = event.self_id;
   const isAtMe = segments.some((segment) => segment.type === "at" && segment.data.qq === String(selfId ?? ""));
   const message: ChatMessage = { messageId: String(event.message_id ?? `${Date.now()}-${sequence++}`), chatType, chatId, groupId: chatId, userId,
@@ -106,7 +128,9 @@ function connect() {
   socket.on("open", () => console.log(`NapCat WS connected: ${config.NAPCAT_WS}`));
   socket.on("message", (data) => {
     try {
-      const event = JSON.parse(data.toString()) as OneBotEvent;
+      const raw = data.toString();
+      const event = JSON.parse(raw) as OneBotEvent;
+      if (!event.post_type) console.warn(`[OneBot] non-event frame: ${raw.slice(0, 500).replace(/(token|access_token|authorization)(["']?\s*[:=]\s*["']?)[^,"'\\s}]+/gi, "$1$2<redacted>")}`);
       void handleEvent(event);
     } catch (error) {
       console.error("Invalid OneBot event:", error);
@@ -134,7 +158,7 @@ export async function createOutgoingMessage(chatType: "group" | "private", chatI
     nickname: login.nickname ?? String(login.user_id),
     avatar: avatar(String(login.user_id)),
     time: Date.now(),
-    segments,
+    segments: replyTo ? [{ type: "reply", data: { id: replyTo } }, ...segments] : segments,
     isAtMe: false,
     isMine: true,
     replyTo

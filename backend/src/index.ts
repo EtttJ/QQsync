@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { WebSocketServer } from "ws";
 import { config } from "./config.js";
-import { listConversations, listMessages, listStickers, saveSticker } from "./db.js";
+import { getHistoryLimit, listConversations, listMessages, listStickers, saveSticker, setHistoryLimit } from "./db.js";
 import { broadcast, createOutgoingMessage, fetchImage, getConversations, onMessage, sendGroupMessage, sendPrivateMessage, startOneBot } from "./onebot.js";
 import type { Segment } from "./types.js";
 
@@ -28,6 +28,15 @@ app.addHook("onRequest", async (request, reply) => {
   if (!authorized(request)) return reply.code(401).send({ error: "Unauthorized" });
 });
 app.get("/health", async () => ({ ok: true }));
+app.get("/api/settings", async () => ({ historyLimit: getHistoryLimit() }));
+app.put("/api/settings", async (request, reply) => {
+  const historyLimit = Number((request.body as { historyLimit?: number }).historyLimit);
+  if (!Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 1000) {
+    return reply.code(400).send({ error: "消息保留数量必须是 1 到 1000 的整数" });
+  }
+  setHistoryLimit(historyLimit);
+  return { historyLimit };
+});
 app.get("/api/conversations", async (request) => {
   try { return { conversations: [...await getConversations(), ...listConversations()] }; }
   catch (error) { request.log.error({ error }, "Failed to load conversations"); return { conversations: listConversations() }; }
@@ -45,10 +54,10 @@ app.get("/api/image", async (request, reply) => {
   }
 });
 app.get("/api/messages", async (request) => {
-  const query = request.query as { group_id?: string; conversation_id?: string; before?: string; limit?: string };
+  const query = request.query as { group_id?: string; conversation_id?: string; conversation_type?: "group" | "private"; before?: string; limit?: string };
   const id = query.conversation_id ?? query.group_id;
   if (!id) return { messages: [] };
-  return { messages: listMessages(id, query.before ? Number(query.before) : undefined, query.limit ? Math.min(Number(query.limit), 1000) : undefined) };
+  return { messages: listMessages(id, query.conversation_type ?? "group", query.before ? Number(query.before) : undefined, query.limit ? Math.min(Number(query.limit), 1000) : undefined) };
 });
 app.post("/api/send", async (request, reply) => {
   const body = request.body as { chat_type?: "group" | "private"; target_id?: string; group_id?: string; message?: Segment[]; reply_to?: string };

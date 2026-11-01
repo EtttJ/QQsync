@@ -8,6 +8,7 @@ export const useChatStore = defineStore("chat", {
         conversations: [],
         messages: [],
         stickers: [],
+        historyLimit: 100,
         connected: false,
         replyTo: undefined,
         pinned: JSON.parse(localStorage.getItem(pinnedKey) ?? "[]"),
@@ -37,13 +38,27 @@ export const useChatStore = defineStore("chat", {
         },
         async selectConversation(conversation) {
             this.conversation = conversation;
-            const response = await fetch(`/api/messages?conversation_id=${encodeURIComponent(conversation.id)}&token=${encodeURIComponent(this.token)}`);
+            const response = await fetch(`/api/messages?conversation_id=${encodeURIComponent(conversation.id)}&conversation_type=${conversation.type}&token=${encodeURIComponent(this.token)}`);
             if (!response.ok)
                 throw new Error("加载消息失败");
             this.messages = (await response.json()).messages;
             this.replyTo = undefined;
         },
         async loadStickers() { const response = await fetch(`/api/stickers?token=${encodeURIComponent(this.token)}`); this.stickers = (await response.json()).stickers; },
+        async loadSettings() {
+            const response = await fetch(`/api/settings?token=${encodeURIComponent(this.token)}`);
+            if (!response.ok)
+                throw new Error("加载消息保留设置失败");
+            this.historyLimit = (await response.json()).historyLimit;
+        },
+        async updateHistoryLimit(limit) {
+            const response = await fetch(`/api/settings?token=${encodeURIComponent(this.token)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ historyLimit: limit }) });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.error ?? "保存消息保留设置失败");
+            }
+            this.historyLimit = (await response.json()).historyLimit;
+        },
         connect() {
             const protocol = location.protocol === "https:" ? "wss:" : "ws:";
             const socket = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(this.token)}`);
@@ -71,7 +86,8 @@ export const useChatStore = defineStore("chat", {
                     this.messages.push(message);
                 else {
                     this.unread[key] = (this.unread[key] ?? 0) + 1;
-                    this.firstUnreadMessage[key] = message.messageId;
+                    if (!this.firstUnreadMessage[key])
+                        this.firstUnreadMessage[key] = message.messageId;
                 }
             };
         },

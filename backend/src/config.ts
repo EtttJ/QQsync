@@ -13,7 +13,7 @@ const schema = z.object({
   NAPCAT_HTTP: z.string().url(),
   NAPCAT_TOKEN: z.string().default(""),
   WEB_TOKEN: z.string().min(1),
-  HISTORY_LIMIT: z.coerce.number().int().positive().max(1000).default(200),
+  HISTORY_LIMIT: z.coerce.number().int().positive().max(1000).default(100),
   UPLOAD_DIR: z.string().default("./data/uploads"),
   DB_FILE: z.string().default("./data/qq-bridge.db")
 });

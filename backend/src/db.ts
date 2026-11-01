@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import type { ChatMessage } from "./types.js";
+const defaultHistoryLimit = 100;
 
 fs.mkdirSync(path.dirname(config.DB_FILE), { recursive: true });
 export const db = new Database(config.DB_FILE);
@@ -16,8 +17,28 @@ CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, time DE
 CREATE TABLE IF NOT EXISTS stickers (
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT NOT NULL,
   created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL
 );`);
 try { db.exec("ALTER TABLE messages ADD COLUMN chat_type TEXT NOT NULL DEFAULT 'group'"); } catch {}
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('history_limit', ?)").run(String(defaultHistoryLimit));
+
+export function getHistoryLimit() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'history_limit'").get() as { value?: string } | undefined;
+  const value = Number(row?.value);
+  return Number.isInteger(value) && value > 0 ? value : defaultHistoryLimit;
+}
+
+export function setHistoryLimit(limit: number) {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('history_limit', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(limit));
+  db.prepare(`DELETE FROM messages WHERE message_id IN (
+    SELECT message_id FROM (
+      SELECT message_id, ROW_NUMBER() OVER (PARTITION BY chat_type, group_id ORDER BY time DESC) AS position
+      FROM messages
+    ) WHERE position > ?
+  )`).run(limit);
+}
 
 export function saveMessage(message: ChatMessage) {
   db.prepare(`INSERT OR REPLACE INTO messages
@@ -25,6 +46,13 @@ export function saveMessage(message: ChatMessage) {
     VALUES (@messageId,@chatId,@chatType,@userId,@nickname,@avatar,@time,@segments,@isAtMe,@replyTo,@forward)`)
     .run({ ...message, segments: JSON.stringify(message.segments), isAtMe: message.isAtMe ? 1 : 0,
       replyTo: message.replyTo ?? null, forward: message.forward ? JSON.stringify(message.forward) : null });
+  db.prepare(`DELETE FROM messages
+    WHERE chat_type = ? AND group_id = ?
+      AND message_id NOT IN (
+        SELECT message_id FROM messages
+        WHERE chat_type = ? AND group_id = ?
+        ORDER BY time DESC LIMIT ?
+      )`).run(message.chatType, message.chatId, message.chatType, message.chatId, getHistoryLimit());
 }
 
 function fromRow(row: Record<string, unknown>): ChatMessage {
@@ -36,9 +64,9 @@ function fromRow(row: Record<string, unknown>): ChatMessage {
     forward: row.forward ? JSON.parse(String(row.forward)) : undefined };
 }
 
-export function listMessages(groupId: string, before?: number, limit = config.HISTORY_LIMIT) {
-  const rows = db.prepare(`SELECT * FROM messages WHERE group_id = ? ${before ? "AND time < ?" : ""}
-    ORDER BY time DESC LIMIT ?`).all(...(before ? [groupId, before, limit] : [groupId, limit])) as Record<string, unknown>[];
+export function listMessages(groupId: string, chatType: "group" | "private", before?: number, limit = getHistoryLimit()) {
+  const rows = db.prepare(`SELECT * FROM messages WHERE group_id = ? AND chat_type = ? ${before ? "AND time < ?" : ""}
+    ORDER BY time DESC LIMIT ?`).all(...(before ? [groupId, chatType, before, limit] : [groupId, chatType, limit])) as Record<string, unknown>[];
   return rows.map(fromRow).reverse();
 }
 export function listConversations() {

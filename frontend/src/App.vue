@@ -10,26 +10,51 @@ const list = ref<HTMLElement>();
 const imageInput = ref<HTMLInputElement>();
 const atBottom = ref(true);
 const newMessageCount = ref(0);
+const historyLimitDraft = ref(store.historyLimit);
 const loggedIn = computed(() => Boolean(store.token && store.conversation));
 const currentKey = computed(() => store.conversation ? store.conversationKey(store.conversation) : "");
 const currentUnread = computed(() => currentKey.value ? (store.unread[currentKey.value] ?? 0) : 0);
 const firstUnreadMessageId = computed(() => currentKey.value ? store.firstUnreadMessage[currentKey.value] : undefined);
+const replyingMessage = computed(() => store.replyTo ? store.messages.find((message) => message.messageId === store.replyTo) : undefined);
+function clearUnread() {
+  if (!currentKey.value) return;
+  store.unread[currentKey.value] = 0;
+  delete store.firstUnreadMessage[currentKey.value];
+}
 function scrollToBottom() {
   if (!list.value) return;
   list.value.scrollTop = list.value.scrollHeight;
   atBottom.value = true;
   newMessageCount.value = 0;
+  clearUnread();
 }
 function handleScroll() {
   if (!list.value) return;
   atBottom.value = list.value.scrollHeight - list.value.scrollTop - list.value.clientHeight <= 48;
-  if (atBottom.value) newMessageCount.value = 0;
+  if (atBottom.value) {
+    newMessageCount.value = 0;
+    clearUnread();
+  }
 }
-async function login() { if (!token.value) return ElMessage.warning("请输入访问密码"); try { store.setToken(token.value); await store.loadConversations(); await store.loadStickers(); if (store.conversations[0]) await selectConversation(store.conversations[0]); store.connect(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "连接失败"); } }
+async function login() { if (!token.value) return ElMessage.warning("请输入访问密码"); try { store.setToken(token.value); await store.loadSettings(); historyLimitDraft.value = store.historyLimit; await store.loadConversations(); await store.loadStickers(); if (store.conversations[0]) await selectConversation(store.conversations[0]); store.connect(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "连接失败"); } }
+async function saveHistoryLimit() {
+  const limit = Number(historyLimitDraft.value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return ElMessage.warning("请输入 1 到 1000 之间的整数");
+  try { await store.updateHistoryLimit(limit); historyLimitDraft.value = store.historyLimit; ElMessage.success(`已保存，保留 ${store.historyLimit} 条消息`); }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : "保存失败"); }
+}
 async function selectConversation(item: typeof store.conversations[number]) { try { await store.selectConversation(item); await nextTick(scrollToBottom); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "加载会话失败"); } }
+function scrollToMessage(messageId: string) {
+  const target = document.getElementById(`message-${messageId}`);
+  if (!target) {
+    ElMessage.info("引用的消息不在本地保存的 200 条记录中");
+    return;
+  }
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
 function scrollToUnread() {
   if (!firstUnreadMessageId.value) return;
-  document.getElementById(`message-${firstUnreadMessageId.value}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  scrollToMessage(firstUnreadMessageId.value);
   if (currentKey.value) {
     store.unread[currentKey.value] = 0;
     delete store.firstUnreadMessage[currentKey.value];
@@ -57,11 +82,11 @@ onMounted(() => { if (store.token) void login(); });
     <section v-else class="chat-shell card">
       <aside class="conversation-list"><div class="sidebar-title">好友和群聊 <span :class="{ online: store.connected }">●</span></div><button v-for="item in store.conversations" :key="`${item.type}-${item.id}`" class="conversation" :class="{ active: store.conversation?.id === item.id && store.conversation?.type === item.type }" @click="selectConversation(item)"><img :src="item.avatar" /><span><b>{{ item.name }}</b><small>{{ item.type === "group" ? "群聊" : "好友" }}</small></span><i v-if="store.unread[store.conversationKey(item)]" class="unread-badge">{{ store.unread[store.conversationKey(item)] > 99 ? "99+" : store.unread[store.conversationKey(item)] }}</i><el-button class="pin-button" text size="small" @click.stop="store.togglePinned(item)">{{ store.isPinned(item) ? "取消置顶" : "置顶" }}</el-button></button></aside>
       <section class="chat-main" v-if="loggedIn">
-      <header><div><strong>{{ store.conversation?.name }}</strong><span>{{ store.conversation?.type === "group" ? "群聊" : "私聊" }}</span><span :class="{ online: store.connected }">● {{ store.connected ? "已连接" : "重连中" }}</span></div><el-button text @click="store.$reset()">退出</el-button></header>
-      <div ref="list" class="messages" @scroll="handleScroll"><MessageItem v-for="message in store.messages" :key="message.messageId" :message="message" :stickers="store.stickers" @reply="store.replyTo = $event" /></div>
-      <div v-if="currentUnread && firstUnreadMessageId" class="unread-jump"><el-button type="primary" round @click="scrollToUnread">{{ currentUnread }} 条未读消息，跳转到最新未读</el-button></div>
+      <header><div><strong>{{ store.conversation?.name }}</strong><span>{{ store.conversation?.type === "group" ? "群聊" : "私聊" }}</span><span :class="{ online: store.connected }">● {{ store.connected ? "已连接" : "重连中" }}</span></div><div class="header-actions"><label>保留消息 <input v-model.number="historyLimitDraft" type="number" min="1" max="1000" step="1" @keyup.enter="saveHistoryLimit" /><span>条</span></label><el-button text @click="saveHistoryLimit">保存</el-button><el-button text @click="store.$reset()">退出</el-button></div></header>
+      <div ref="list" class="messages" @scroll="handleScroll"><MessageItem v-for="message in store.messages" :key="message.messageId" :message="message" :stickers="store.stickers" @reply="store.replyTo = $event" @jump="scrollToMessage" /></div>
+      <div v-if="currentUnread && firstUnreadMessageId" class="unread-jump"><el-button type="primary" round @click="scrollToUnread">{{ currentUnread }} 条未读消息，跳转到第一条未读</el-button></div>
       <div v-if="!atBottom" class="new-message-indicator"><el-button type="primary" round @click="scrollToBottom">↓ {{ newMessageCount ? `${newMessageCount} 条新消息` : "滚动到最底部" }}</el-button></div>
-      <div v-if="store.replyTo" class="replying">回复消息 {{ store.replyTo }} <el-button text @click="store.replyTo = undefined">取消</el-button></div>
+      <div v-if="store.replyTo" class="replying">回复 {{ replyingMessage?.nickname || store.replyTo }} <span v-if="replyingMessage">（{{ store.replyTo }}）</span><el-button text @click="store.replyTo = undefined">取消</el-button></div>
       <footer><div class="composer-tools"><el-button @click="imageInput?.click()">图片/表情包</el-button><input ref="imageInput" hidden type="file" accept="image/*" @change="uploadImage" /><el-button v-for="sticker in store.stickers.slice(0, 6)" :key="sticker.id" text @click="sendSticker(sticker.url)">🖼️</el-button></div><el-input v-model="draft" type="textarea" :rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行" @keydown="onKey" /><el-button type="primary" @click="send">发送</el-button></footer>
       </section><div v-else class="empty-chat">从左侧选择一个好友或群聊</div>
     </section>
