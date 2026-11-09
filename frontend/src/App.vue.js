@@ -1,4 +1,4 @@
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useChatStore } from "./stores/chat";
 import MessageItem from "./components/MessageItem.vue";
@@ -9,12 +9,25 @@ const list = ref();
 const imageInput = ref();
 const atBottom = ref(true);
 const newMessageCount = ref(0);
+const viewerOpen = ref(false);
+const viewerIndex = ref(0);
+const viewerScale = ref(1);
+const viewerRotation = ref(0);
+const viewerOffset = ref({ x: 0, y: 0 });
+const dragging = ref(false);
+const dragStart = ref({ x: 0, y: 0 });
+const dragOrigin = ref({ x: 0, y: 0 });
 const historyLimitDraft = ref(store.historyLimit);
 const loggedIn = computed(() => Boolean(store.token && store.conversation));
 const currentKey = computed(() => store.conversation ? store.conversationKey(store.conversation) : "");
 const currentUnread = computed(() => currentKey.value ? (store.unread[currentKey.value] ?? 0) : 0);
 const firstUnreadMessageId = computed(() => currentKey.value ? store.firstUnreadMessage[currentKey.value] : undefined);
 const replyingMessage = computed(() => store.replyTo ? store.messages.find((message) => message.messageId === store.replyTo) : undefined);
+const viewerImages = computed(() => store.messages.flatMap((message) => message.segments
+    .filter((segment) => segment.type === "image" || segment.type === "mface")
+    .map((segment) => segment.data.url || (segment.data.file?.startsWith("http") ? segment.data.file : ""))
+    .filter((url) => Boolean(url))));
+const viewerImage = computed(() => viewerImages.value[viewerIndex.value] || "");
 function clearUnread() {
     if (!currentKey.value)
         return;
@@ -89,6 +102,73 @@ function scrollToUnread() {
         delete store.firstUnreadMessage[currentKey.value];
     }
 }
+function resetViewerTransform() {
+    viewerScale.value = 1;
+    viewerRotation.value = 0;
+    viewerOffset.value = { x: 0, y: 0 };
+}
+function openImage(url) {
+    const index = viewerImages.value.indexOf(url);
+    viewerIndex.value = index >= 0 ? index : 0;
+    resetViewerTransform();
+    viewerOpen.value = true;
+}
+function closeImage() {
+    viewerOpen.value = false;
+    dragging.value = false;
+    resetViewerTransform();
+}
+function changeImage(step) {
+    if (viewerImages.value.length < 2)
+        return;
+    viewerIndex.value = (viewerIndex.value + step + viewerImages.value.length) % viewerImages.value.length;
+    resetViewerTransform();
+}
+function zoomImage(amount) {
+    viewerScale.value = Math.min(5, Math.max(0.25, Number((viewerScale.value + amount).toFixed(2))));
+}
+function fitImage() {
+    resetViewerTransform();
+}
+function startDragging(event) {
+    if (event.button !== 0)
+        return;
+    dragging.value = true;
+    dragStart.value = { x: event.clientX, y: event.clientY };
+    dragOrigin.value = { ...viewerOffset.value };
+    event.currentTarget.setPointerCapture(event.pointerId);
+}
+function dragImage(event) {
+    if (!dragging.value)
+        return;
+    viewerOffset.value = {
+        x: dragOrigin.value.x + event.clientX - dragStart.value.x,
+        y: dragOrigin.value.y + event.clientY - dragStart.value.y,
+    };
+}
+function stopDragging() {
+    dragging.value = false;
+}
+function onViewerWheel(event) {
+    event.preventDefault();
+    zoomImage(event.deltaY < 0 ? 0.1 : -0.1);
+}
+function onViewerKeydown(event) {
+    if (!viewerOpen.value)
+        return;
+    if (event.key === "Escape")
+        closeImage();
+    else if (event.key === "ArrowLeft")
+        changeImage(-1);
+    else if (event.key === "ArrowRight")
+        changeImage(1);
+    else if (event.key === "+" || event.key === "=")
+        zoomImage(0.1);
+    else if (event.key === "-")
+        zoomImage(-0.1);
+    else if (event.key === "0")
+        fitImage();
+}
 async function send() { if (!draft.value.trim())
     return; await store.send([{ type: "text", data: { text: draft.value } }]); draft.value = ""; await nextTick(scrollToBottom); }
 async function uploadImage(event) { const file = event.target.files?.[0]; if (!file)
@@ -107,8 +187,12 @@ watch(() => store.messages.length, async (length, previousLength) => {
     else
         newMessageCount.value += length - previousLength;
 });
-onMounted(() => { if (store.token)
-    void login(); });
+onMounted(() => {
+    window.addEventListener("keydown", onViewerKeydown);
+    if (store.token)
+        void login();
+});
+onUnmounted(() => window.removeEventListener("keydown", onViewerKeydown));
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
 let __VLS_components;
@@ -307,6 +391,7 @@ else {
             const __VLS_36 = __VLS_asFunctionalComponent(MessageItem, new MessageItem({
                 ...{ 'onReply': {} },
                 ...{ 'onJump': {} },
+                ...{ 'onImage': {} },
                 key: (message.messageId),
                 message: (message),
                 stickers: (__VLS_ctx.store.stickers),
@@ -314,6 +399,7 @@ else {
             const __VLS_37 = __VLS_36({
                 ...{ 'onReply': {} },
                 ...{ 'onJump': {} },
+                ...{ 'onImage': {} },
                 key: (message.messageId),
                 message: (message),
                 stickers: (__VLS_ctx.store.stickers),
@@ -333,61 +419,64 @@ else {
             const __VLS_43 = {
                 onJump: (__VLS_ctx.scrollToMessage)
             };
+            const __VLS_44 = {
+                onImage: (__VLS_ctx.openImage)
+            };
             var __VLS_38;
         }
         if (__VLS_ctx.currentUnread && __VLS_ctx.firstUnreadMessageId) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
                 ...{ class: "unread-jump" },
             });
-            const __VLS_44 = {}.ElButton;
+            const __VLS_45 = {}.ElButton;
             /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
             // @ts-ignore
-            const __VLS_45 = __VLS_asFunctionalComponent(__VLS_44, new __VLS_44({
+            const __VLS_46 = __VLS_asFunctionalComponent(__VLS_45, new __VLS_45({
                 ...{ 'onClick': {} },
                 type: "primary",
                 round: true,
             }));
-            const __VLS_46 = __VLS_45({
+            const __VLS_47 = __VLS_46({
                 ...{ 'onClick': {} },
                 type: "primary",
                 round: true,
-            }, ...__VLS_functionalComponentArgsRest(__VLS_45));
-            let __VLS_48;
+            }, ...__VLS_functionalComponentArgsRest(__VLS_46));
             let __VLS_49;
             let __VLS_50;
-            const __VLS_51 = {
+            let __VLS_51;
+            const __VLS_52 = {
                 onClick: (__VLS_ctx.scrollToUnread)
             };
-            __VLS_47.slots.default;
+            __VLS_48.slots.default;
             (__VLS_ctx.currentUnread);
-            var __VLS_47;
+            var __VLS_48;
         }
         if (!__VLS_ctx.atBottom) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
                 ...{ class: "new-message-indicator" },
             });
-            const __VLS_52 = {}.ElButton;
+            const __VLS_53 = {}.ElButton;
             /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
             // @ts-ignore
-            const __VLS_53 = __VLS_asFunctionalComponent(__VLS_52, new __VLS_52({
+            const __VLS_54 = __VLS_asFunctionalComponent(__VLS_53, new __VLS_53({
                 ...{ 'onClick': {} },
                 type: "primary",
                 round: true,
             }));
-            const __VLS_54 = __VLS_53({
+            const __VLS_55 = __VLS_54({
                 ...{ 'onClick': {} },
                 type: "primary",
                 round: true,
-            }, ...__VLS_functionalComponentArgsRest(__VLS_53));
-            let __VLS_56;
+            }, ...__VLS_functionalComponentArgsRest(__VLS_54));
             let __VLS_57;
             let __VLS_58;
-            const __VLS_59 = {
+            let __VLS_59;
+            const __VLS_60 = {
                 onClick: (__VLS_ctx.scrollToBottom)
             };
-            __VLS_55.slots.default;
+            __VLS_56.slots.default;
             (__VLS_ctx.newMessageCount ? `${__VLS_ctx.newMessageCount} 条新消息` : "滚动到最底部");
-            var __VLS_55;
+            var __VLS_56;
         }
         if (__VLS_ctx.store.replyTo) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -398,21 +487,21 @@ else {
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
                 (__VLS_ctx.store.replyTo);
             }
-            const __VLS_60 = {}.ElButton;
+            const __VLS_61 = {}.ElButton;
             /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
             // @ts-ignore
-            const __VLS_61 = __VLS_asFunctionalComponent(__VLS_60, new __VLS_60({
+            const __VLS_62 = __VLS_asFunctionalComponent(__VLS_61, new __VLS_61({
                 ...{ 'onClick': {} },
                 text: true,
             }));
-            const __VLS_62 = __VLS_61({
+            const __VLS_63 = __VLS_62({
                 ...{ 'onClick': {} },
                 text: true,
-            }, ...__VLS_functionalComponentArgsRest(__VLS_61));
-            let __VLS_64;
+            }, ...__VLS_functionalComponentArgsRest(__VLS_62));
             let __VLS_65;
             let __VLS_66;
-            const __VLS_67 = {
+            let __VLS_67;
+            const __VLS_68 = {
                 onClick: (...[$event]) => {
                     if (!!(!__VLS_ctx.store.token))
                         return;
@@ -423,26 +512,26 @@ else {
                     __VLS_ctx.store.replyTo = undefined;
                 }
             };
-            __VLS_63.slots.default;
-            var __VLS_63;
+            __VLS_64.slots.default;
+            var __VLS_64;
         }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.footer, __VLS_intrinsicElements.footer)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "composer-tools" },
         });
-        const __VLS_68 = {}.ElButton;
+        const __VLS_69 = {}.ElButton;
         /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
         // @ts-ignore
-        const __VLS_69 = __VLS_asFunctionalComponent(__VLS_68, new __VLS_68({
+        const __VLS_70 = __VLS_asFunctionalComponent(__VLS_69, new __VLS_69({
             ...{ 'onClick': {} },
         }));
-        const __VLS_70 = __VLS_69({
+        const __VLS_71 = __VLS_70({
             ...{ 'onClick': {} },
-        }, ...__VLS_functionalComponentArgsRest(__VLS_69));
-        let __VLS_72;
+        }, ...__VLS_functionalComponentArgsRest(__VLS_70));
         let __VLS_73;
         let __VLS_74;
-        const __VLS_75 = {
+        let __VLS_75;
+        const __VLS_76 = {
             onClick: (...[$event]) => {
                 if (!!(!__VLS_ctx.store.token))
                     return;
@@ -451,8 +540,8 @@ else {
                 __VLS_ctx.imageInput?.click();
             }
         };
-        __VLS_71.slots.default;
-        var __VLS_71;
+        __VLS_72.slots.default;
+        var __VLS_72;
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             ...{ onChange: (__VLS_ctx.uploadImage) },
             ref: "imageInput",
@@ -462,23 +551,23 @@ else {
         });
         /** @type {typeof __VLS_ctx.imageInput} */ ;
         for (const [sticker] of __VLS_getVForSourceType((__VLS_ctx.store.stickers.slice(0, 6)))) {
-            const __VLS_76 = {}.ElButton;
+            const __VLS_77 = {}.ElButton;
             /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
             // @ts-ignore
-            const __VLS_77 = __VLS_asFunctionalComponent(__VLS_76, new __VLS_76({
+            const __VLS_78 = __VLS_asFunctionalComponent(__VLS_77, new __VLS_77({
                 ...{ 'onClick': {} },
                 key: (sticker.id),
                 text: true,
             }));
-            const __VLS_78 = __VLS_77({
+            const __VLS_79 = __VLS_78({
                 ...{ 'onClick': {} },
                 key: (sticker.id),
                 text: true,
-            }, ...__VLS_functionalComponentArgsRest(__VLS_77));
-            let __VLS_80;
+            }, ...__VLS_functionalComponentArgsRest(__VLS_78));
             let __VLS_81;
             let __VLS_82;
-            const __VLS_83 = {
+            let __VLS_83;
+            const __VLS_84 = {
                 onClick: (...[$event]) => {
                     if (!!(!__VLS_ctx.store.token))
                         return;
@@ -487,58 +576,152 @@ else {
                     __VLS_ctx.sendSticker(sticker.url);
                 }
             };
-            __VLS_79.slots.default;
-            var __VLS_79;
+            __VLS_80.slots.default;
+            var __VLS_80;
         }
-        const __VLS_84 = {}.ElInput;
+        const __VLS_85 = {}.ElInput;
         /** @type {[typeof __VLS_components.ElInput, typeof __VLS_components.elInput, ]} */ ;
         // @ts-ignore
-        const __VLS_85 = __VLS_asFunctionalComponent(__VLS_84, new __VLS_84({
+        const __VLS_86 = __VLS_asFunctionalComponent(__VLS_85, new __VLS_85({
             ...{ 'onKeydown': {} },
             modelValue: (__VLS_ctx.draft),
             type: "textarea",
             rows: (3),
             placeholder: "输入消息，Enter 发送，Shift+Enter 换行",
         }));
-        const __VLS_86 = __VLS_85({
+        const __VLS_87 = __VLS_86({
             ...{ 'onKeydown': {} },
             modelValue: (__VLS_ctx.draft),
             type: "textarea",
             rows: (3),
             placeholder: "输入消息，Enter 发送，Shift+Enter 换行",
-        }, ...__VLS_functionalComponentArgsRest(__VLS_85));
-        let __VLS_88;
+        }, ...__VLS_functionalComponentArgsRest(__VLS_86));
         let __VLS_89;
         let __VLS_90;
-        const __VLS_91 = {
+        let __VLS_91;
+        const __VLS_92 = {
             onKeydown: (__VLS_ctx.onKey)
         };
-        var __VLS_87;
-        const __VLS_92 = {}.ElButton;
+        var __VLS_88;
+        const __VLS_93 = {}.ElButton;
         /** @type {[typeof __VLS_components.ElButton, typeof __VLS_components.elButton, typeof __VLS_components.ElButton, typeof __VLS_components.elButton, ]} */ ;
         // @ts-ignore
-        const __VLS_93 = __VLS_asFunctionalComponent(__VLS_92, new __VLS_92({
+        const __VLS_94 = __VLS_asFunctionalComponent(__VLS_93, new __VLS_93({
             ...{ 'onClick': {} },
             type: "primary",
         }));
-        const __VLS_94 = __VLS_93({
+        const __VLS_95 = __VLS_94({
             ...{ 'onClick': {} },
             type: "primary",
-        }, ...__VLS_functionalComponentArgsRest(__VLS_93));
-        let __VLS_96;
+        }, ...__VLS_functionalComponentArgsRest(__VLS_94));
         let __VLS_97;
         let __VLS_98;
-        const __VLS_99 = {
+        let __VLS_99;
+        const __VLS_100 = {
             onClick: (__VLS_ctx.send)
         };
-        __VLS_95.slots.default;
-        var __VLS_95;
+        __VLS_96.slots.default;
+        var __VLS_96;
     }
     else {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "empty-chat" },
         });
     }
+}
+if (__VLS_ctx.viewerOpen) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ onClick: (__VLS_ctx.closeImage) },
+        ...{ onWheel: (__VLS_ctx.onViewerWheel) },
+        ...{ class: "image-viewer" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.closeImage) },
+        ...{ class: "viewer-close" },
+        type: "button",
+        'aria-label': "关闭",
+    });
+    if (__VLS_ctx.viewerImages.length > 1) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.viewerOpen))
+                        return;
+                    if (!(__VLS_ctx.viewerImages.length > 1))
+                        return;
+                    __VLS_ctx.changeImage(-1);
+                } },
+            ...{ class: "viewer-nav viewer-prev" },
+            type: "button",
+            'aria-label': "上一张",
+        });
+    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ onClick: (__VLS_ctx.closeImage) },
+        ...{ class: "viewer-stage" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
+        ...{ onPointerdown: (__VLS_ctx.startDragging) },
+        ...{ onPointermove: (__VLS_ctx.dragImage) },
+        ...{ onPointerup: (__VLS_ctx.stopDragging) },
+        ...{ onPointercancel: (__VLS_ctx.stopDragging) },
+        ...{ class: "viewer-image" },
+        ...{ class: ({ dragging: __VLS_ctx.dragging }) },
+        src: (__VLS_ctx.viewerImage),
+        alt: "图片预览",
+        ...{ style: ({ transform: `translate(${__VLS_ctx.viewerOffset.x}px, ${__VLS_ctx.viewerOffset.y}px) scale(${__VLS_ctx.viewerScale}) rotate(${__VLS_ctx.viewerRotation}deg)` }) },
+    });
+    if (__VLS_ctx.viewerImages.length > 1) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.viewerOpen))
+                        return;
+                    if (!(__VLS_ctx.viewerImages.length > 1))
+                        return;
+                    __VLS_ctx.changeImage(1);
+                } },
+            ...{ class: "viewer-nav viewer-next" },
+            type: "button",
+            'aria-label': "下一张",
+        });
+    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ onClick: () => { } },
+        ...{ class: "viewer-toolbar" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (...[$event]) => {
+                if (!(__VLS_ctx.viewerOpen))
+                    return;
+                __VLS_ctx.zoomImage(-0.1);
+            } },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    (Math.round(__VLS_ctx.viewerScale * 100));
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (...[$event]) => {
+                if (!(__VLS_ctx.viewerOpen))
+                    return;
+                __VLS_ctx.zoomImage(0.1);
+            } },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (...[$event]) => {
+                if (!(__VLS_ctx.viewerOpen))
+                    return;
+                __VLS_ctx.viewerRotation = (__VLS_ctx.viewerRotation + 90) % 360;
+            } },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.fitImage) },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.fitImage) },
+        type: "button",
+    });
 }
 /** @type {__VLS_StyleScopedClasses['app']} */ ;
 /** @type {__VLS_StyleScopedClasses['login']} */ ;
@@ -558,6 +741,15 @@ else {
 /** @type {__VLS_StyleScopedClasses['replying']} */ ;
 /** @type {__VLS_StyleScopedClasses['composer-tools']} */ ;
 /** @type {__VLS_StyleScopedClasses['empty-chat']} */ ;
+/** @type {__VLS_StyleScopedClasses['image-viewer']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-close']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-nav']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-prev']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-stage']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-image']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-nav']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-next']} */ ;
+/** @type {__VLS_StyleScopedClasses['viewer-toolbar']} */ ;
 var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
@@ -570,11 +762,18 @@ const __VLS_self = (await import('vue')).defineComponent({
             imageInput: imageInput,
             atBottom: atBottom,
             newMessageCount: newMessageCount,
+            viewerOpen: viewerOpen,
+            viewerScale: viewerScale,
+            viewerRotation: viewerRotation,
+            viewerOffset: viewerOffset,
+            dragging: dragging,
             historyLimitDraft: historyLimitDraft,
             loggedIn: loggedIn,
             currentUnread: currentUnread,
             firstUnreadMessageId: firstUnreadMessageId,
             replyingMessage: replyingMessage,
+            viewerImages: viewerImages,
+            viewerImage: viewerImage,
             scrollToBottom: scrollToBottom,
             handleScroll: handleScroll,
             login: login,
@@ -582,6 +781,15 @@ const __VLS_self = (await import('vue')).defineComponent({
             selectConversation: selectConversation,
             scrollToMessage: scrollToMessage,
             scrollToUnread: scrollToUnread,
+            openImage: openImage,
+            closeImage: closeImage,
+            changeImage: changeImage,
+            zoomImage: zoomImage,
+            fitImage: fitImage,
+            startDragging: startDragging,
+            dragImage: dragImage,
+            stopDragging: stopDragging,
+            onViewerWheel: onViewerWheel,
             send: send,
             uploadImage: uploadImage,
             sendSticker: sendSticker,

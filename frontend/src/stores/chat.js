@@ -26,7 +26,19 @@ export const useChatStore = defineStore("chat", {
             this.sortConversations();
         },
         sortConversations() {
-            this.conversations.sort((a, b) => Number(this.isPinned(b)) - Number(this.isPinned(a)));
+            const originalOrder = new Map(this.conversations.map((item, index) => [this.conversationKey(item), index]));
+            const pinnedOrder = new Map(this.pinned.map((key, index) => [key, index]));
+            this.conversations.sort((a, b) => {
+                const aOrder = pinnedOrder.get(this.conversationKey(a));
+                const bOrder = pinnedOrder.get(this.conversationKey(b));
+                if (aOrder !== undefined && bOrder !== undefined)
+                    return aOrder - bOrder;
+                if (aOrder !== undefined)
+                    return -1;
+                if (bOrder !== undefined)
+                    return 1;
+                return (originalOrder.get(this.conversationKey(a)) ?? 0) - (originalOrder.get(this.conversationKey(b)) ?? 0);
+            });
         },
         async loadConversations() {
             const response = await fetch(`/api/conversations?token=${encodeURIComponent(this.token)}`);

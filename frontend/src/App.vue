@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useChatStore } from "./stores/chat";
 import MessageItem from "./components/MessageItem.vue";
@@ -10,12 +10,25 @@ const list = ref<HTMLElement>();
 const imageInput = ref<HTMLInputElement>();
 const atBottom = ref(true);
 const newMessageCount = ref(0);
+const viewerOpen = ref(false);
+const viewerIndex = ref(0);
+const viewerScale = ref(1);
+const viewerRotation = ref(0);
+const viewerOffset = ref({ x: 0, y: 0 });
+const dragging = ref(false);
+const dragStart = ref({ x: 0, y: 0 });
+const dragOrigin = ref({ x: 0, y: 0 });
 const historyLimitDraft = ref(store.historyLimit);
 const loggedIn = computed(() => Boolean(store.token && store.conversation));
 const currentKey = computed(() => store.conversation ? store.conversationKey(store.conversation) : "");
 const currentUnread = computed(() => currentKey.value ? (store.unread[currentKey.value] ?? 0) : 0);
 const firstUnreadMessageId = computed(() => currentKey.value ? store.firstUnreadMessage[currentKey.value] : undefined);
 const replyingMessage = computed(() => store.replyTo ? store.messages.find((message) => message.messageId === store.replyTo) : undefined);
+const viewerImages = computed(() => store.messages.flatMap((message) => message.segments
+  .filter((segment) => segment.type === "image" || segment.type === "mface")
+  .map((segment) => segment.data.url || (segment.data.file?.startsWith("http") ? segment.data.file : ""))
+  .filter((url): url is string => Boolean(url))));
+const viewerImage = computed(() => viewerImages.value[viewerIndex.value] || "");
 function clearUnread() {
   if (!currentKey.value) return;
   store.unread[currentKey.value] = 0;
@@ -60,6 +73,63 @@ function scrollToUnread() {
     delete store.firstUnreadMessage[currentKey.value];
   }
 }
+function resetViewerTransform() {
+  viewerScale.value = 1;
+  viewerRotation.value = 0;
+  viewerOffset.value = { x: 0, y: 0 };
+}
+function openImage(url: string) {
+  const index = viewerImages.value.indexOf(url);
+  viewerIndex.value = index >= 0 ? index : 0;
+  resetViewerTransform();
+  viewerOpen.value = true;
+}
+function closeImage() {
+  viewerOpen.value = false;
+  dragging.value = false;
+  resetViewerTransform();
+}
+function changeImage(step: number) {
+  if (viewerImages.value.length < 2) return;
+  viewerIndex.value = (viewerIndex.value + step + viewerImages.value.length) % viewerImages.value.length;
+  resetViewerTransform();
+}
+function zoomImage(amount: number) {
+  viewerScale.value = Math.min(5, Math.max(0.25, Number((viewerScale.value + amount).toFixed(2))));
+}
+function fitImage() {
+  resetViewerTransform();
+}
+function startDragging(event: PointerEvent) {
+  if (event.button !== 0) return;
+  dragging.value = true;
+  dragStart.value = { x: event.clientX, y: event.clientY };
+  dragOrigin.value = { ...viewerOffset.value };
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+function dragImage(event: PointerEvent) {
+  if (!dragging.value) return;
+  viewerOffset.value = {
+    x: dragOrigin.value.x + event.clientX - dragStart.value.x,
+    y: dragOrigin.value.y + event.clientY - dragStart.value.y,
+  };
+}
+function stopDragging() {
+  dragging.value = false;
+}
+function onViewerWheel(event: WheelEvent) {
+  event.preventDefault();
+  zoomImage(event.deltaY < 0 ? 0.1 : -0.1);
+}
+function onViewerKeydown(event: KeyboardEvent) {
+  if (!viewerOpen.value) return;
+  if (event.key === "Escape") closeImage();
+  else if (event.key === "ArrowLeft") changeImage(-1);
+  else if (event.key === "ArrowRight") changeImage(1);
+  else if (event.key === "+" || event.key === "=") zoomImage(0.1);
+  else if (event.key === "-") zoomImage(-0.1);
+  else if (event.key === "0") fitImage();
+}
 async function send() { if (!draft.value.trim()) return; await store.send([{ type: "text", data: { text: draft.value } }]); draft.value = ""; await nextTick(scrollToBottom); }
 async function uploadImage(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return; const sticker = await store.saveSticker(file); await store.send([{ type: "image", data: { file: sticker.url, url: sticker.url } }]); (event.target as HTMLInputElement).value = ""; }
 async function sendSticker(url: string) { await store.send([{ type: "image", data: { file: url, url } }]); }
@@ -70,7 +140,11 @@ watch(() => store.messages.length, async (length, previousLength) => {
   if (atBottom.value) scrollToBottom();
   else newMessageCount.value += length - previousLength;
 });
-onMounted(() => { if (store.token) void login(); });
+onMounted(() => {
+  window.addEventListener("keydown", onViewerKeydown);
+  if (store.token) void login();
+});
+onUnmounted(() => window.removeEventListener("keydown", onViewerKeydown));
 </script>
 <template>
   <main class="app">
@@ -83,12 +157,34 @@ onMounted(() => { if (store.token) void login(); });
       <aside class="conversation-list"><div class="sidebar-title">好友和群聊 <span :class="{ online: store.connected }">●</span></div><button v-for="item in store.conversations" :key="`${item.type}-${item.id}`" class="conversation" :class="{ active: store.conversation?.id === item.id && store.conversation?.type === item.type }" @click="selectConversation(item)"><img :src="item.avatar" /><span><b>{{ item.name }}</b><small>{{ item.type === "group" ? "群聊" : "好友" }}</small></span><i v-if="store.unread[store.conversationKey(item)]" class="unread-badge">{{ store.unread[store.conversationKey(item)] > 99 ? "99+" : store.unread[store.conversationKey(item)] }}</i><el-button class="pin-button" text size="small" @click.stop="store.togglePinned(item)">{{ store.isPinned(item) ? "取消置顶" : "置顶" }}</el-button></button></aside>
       <section class="chat-main" v-if="loggedIn">
       <header><div><strong>{{ store.conversation?.name }}</strong><span>{{ store.conversation?.type === "group" ? "群聊" : "私聊" }}</span><span :class="{ online: store.connected }">● {{ store.connected ? "已连接" : "重连中" }}</span></div><div class="header-actions"><label>保留消息 <input v-model.number="historyLimitDraft" type="number" min="1" max="1000" step="1" @keyup.enter="saveHistoryLimit" /><span>条</span></label><el-button text @click="saveHistoryLimit">保存</el-button><el-button text @click="store.$reset()">退出</el-button></div></header>
-      <div ref="list" class="messages" @scroll="handleScroll"><MessageItem v-for="message in store.messages" :key="message.messageId" :message="message" :stickers="store.stickers" @reply="store.replyTo = $event" @jump="scrollToMessage" /></div>
+      <div ref="list" class="messages" @scroll="handleScroll"><MessageItem v-for="message in store.messages" :key="message.messageId" :message="message" :stickers="store.stickers" @reply="store.replyTo = $event" @jump="scrollToMessage" @image="openImage" /></div>
       <div v-if="currentUnread && firstUnreadMessageId" class="unread-jump"><el-button type="primary" round @click="scrollToUnread">{{ currentUnread }} 条未读消息，跳转到第一条未读</el-button></div>
       <div v-if="!atBottom" class="new-message-indicator"><el-button type="primary" round @click="scrollToBottom">↓ {{ newMessageCount ? `${newMessageCount} 条新消息` : "滚动到最底部" }}</el-button></div>
       <div v-if="store.replyTo" class="replying">回复 {{ replyingMessage?.nickname || store.replyTo }} <span v-if="replyingMessage">（{{ store.replyTo }}）</span><el-button text @click="store.replyTo = undefined">取消</el-button></div>
       <footer><div class="composer-tools"><el-button @click="imageInput?.click()">图片/表情包</el-button><input ref="imageInput" hidden type="file" accept="image/*" @change="uploadImage" /><el-button v-for="sticker in store.stickers.slice(0, 6)" :key="sticker.id" text @click="sendSticker(sticker.url)">🖼️</el-button></div><el-input v-model="draft" type="textarea" :rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行" @keydown="onKey" /><el-button type="primary" @click="send">发送</el-button></footer>
       </section><div v-else class="empty-chat">从左侧选择一个好友或群聊</div>
     </section>
+    <div v-if="viewerOpen" class="image-viewer" @click.self="closeImage" @wheel="onViewerWheel">
+      <button class="viewer-close" type="button" aria-label="关闭" @click="closeImage">×</button>
+      <button v-if="viewerImages.length > 1" class="viewer-nav viewer-prev" type="button" aria-label="上一张" @click="changeImage(-1)">‹</button>
+      <div class="viewer-stage" @click.self="closeImage">
+        <img
+          class="viewer-image"
+          :class="{ dragging }"
+          :src="viewerImage"
+          alt="图片预览"
+          :style="{ transform: `translate(${viewerOffset.x}px, ${viewerOffset.y}px) scale(${viewerScale}) rotate(${viewerRotation}deg)` }"
+          @pointerdown="startDragging"
+          @pointermove="dragImage"
+          @pointerup="stopDragging"
+          @pointercancel="stopDragging"
+        />
+      </div>
+      <button v-if="viewerImages.length > 1" class="viewer-nav viewer-next" type="button" aria-label="下一张" @click="changeImage(1)">›</button>
+      <div class="viewer-toolbar" @click.stop>
+        <button type="button" @click="zoomImage(-0.1)">−</button><span>{{ Math.round(viewerScale * 100) }}%</span><button type="button" @click="zoomImage(0.1)">＋</button>
+        <button type="button" @click="viewerRotation = (viewerRotation + 90) % 360">旋转</button><button type="button" @click="fitImage">还原</button><button type="button" @click="fitImage">适应窗口</button>
+      </div>
+    </div>
   </main>
 </template>

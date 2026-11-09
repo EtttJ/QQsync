@@ -86,6 +86,15 @@ for (const [segment, index] of __VLS_getVForSourceType((__VLS_ctx.message.segmen
     }
     else if (segment.type === 'image' && __VLS_ctx.imageSource(segment)) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
+            ...{ onClick: (...[$event]) => {
+                    if (!!(segment.type === 'text'))
+                        return;
+                    if (!!(segment.type === 'at'))
+                        return;
+                    if (!(segment.type === 'image' && __VLS_ctx.imageSource(segment)))
+                        return;
+                    __VLS_ctx.emit('image', __VLS_ctx.imageSource(segment));
+                } },
             ...{ class: "inline-image" },
             src: (__VLS_ctx.imageSource(segment)),
         });
@@ -98,6 +107,19 @@ for (const [segment, index] of __VLS_getVForSourceType((__VLS_ctx.message.segmen
     }
     else if (segment.type === 'mface' && __VLS_ctx.imageSource(segment)) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
+            ...{ onClick: (...[$event]) => {
+                    if (!!(segment.type === 'text'))
+                        return;
+                    if (!!(segment.type === 'at'))
+                        return;
+                    if (!!(segment.type === 'image' && __VLS_ctx.imageSource(segment)))
+                        return;
+                    if (!!(segment.type === 'face' || segment.type === 'emoji'))
+                        return;
+                    if (!(segment.type === 'mface' && __VLS_ctx.imageSource(segment)))
+                        return;
+                    __VLS_ctx.emit('image', __VLS_ctx.imageSource(segment));
+                } },
             ...{ class: "inline-image emoji-image" },
             src: (__VLS_ctx.imageSource(segment)),
         });
